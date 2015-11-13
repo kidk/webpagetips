@@ -1,102 +1,136 @@
 var page = require('webpage').create();
 var system = require('system');
+
+
 var t;
 var address;
 
-var redirects = [];
-var css = [];
-var js = [];
-var js_head;
-var js_body;
+var debug = true;
 
 if (system.args.length === 1) {
     console.log('Usage: loadspeed.js <some URL>');
     phantom.exit(1);
 } else {
+    // Start load timer
     t = Date.now();
+
+    // Get address from arguments
     address = system.args[1];
+
+    // Open page
     page.open(address, function (status) {
+
+        // Check page results
         if (status !== 'success') {
             console.log('FAIL to load the address');
+            phantom.exit();
         } else {
+            // End of load time
             t = Date.now() - t;
-            console.log('Page title is ' + page.evaluate(function () {
-                return document.title;
-            }));
 
-            js_head = page.evaluate(function () {
-                var scripts = document.getElementsByTagName("head")[0].getElementsByTagName("script");
-                var result = [];
-                for (var i=0;i < scripts.length;i++) {
-                    result.push({src: scripts[i].src, inner: scripts[i].innerHTML});
-                }
-
-                return result;
-            });
-
-            js_body = page.evaluate(function () {
-                var scripts = document.getElementsByTagName("body")[0].getElementsByTagName("script");
-                var result = [];
-                for (var i=0;i < scripts.length;i++) {
-                    result.push({src: scripts[i].src, inner: scripts[i].innerHTML});
-                }
-
-                return result;
-            });
-
-            console.log('Loading time: ' + t + ' msec');
-            console.log('Redirects: ');
-            redirects.forEach(function(object) {
-                console.log(object.url + ' => ' + object.redirect);
-            });
-
-            console.log('CSS: ');
-            css.forEach(function(object) {
-                console.log(object.url);
-            });
-
-            console.log('Javascript: ');
-            js.forEach(function(object) {
-                console.log(object.url);
-            });
-
-            console.log('Javascript head: ');
-            js_head.forEach(function(object) {
-                console.log(object.src + ":" + object.inner);
-            });
-
-            console.log('Javascript body: ');
-            js_body.forEach(function(object) {
-                console.log(object.src + ":" + object.inner);
-            });
+            sleep();
         }
-        phantom.exit();
+
     });
 }
 
+var requests = [];
+
+function sleep() {
+    setTimeout(function() {
+        var finished = true;
+        if (debug) console.log('waiting');
+        requests.forEach(function(object) {
+            if (object.status == 0) {
+                if (debug) console.log(JSON.stringify(object));
+                if (object.timestart + 10 < Date.now()) {
+                    object.status = 408;
+                } else {
+                    finished = false;
+                }
+            }
+        });
+
+        if (finished) {
+            finish();
+        } else {
+            if (debug) console.log('sleep called');
+            sleep();
+        }
+    }, 500);
+}
+
+function finish() {
+    // Save all javascript script tags
+    js_head = page.evaluate(function () {
+        var scripts = document.getElementsByTagName("head")[0].getElementsByTagName("script");
+        var result = [];
+        for (var i=0;i < scripts.length;i++) {
+            result.push({'type': ((scripts[i].src) ? 'external':'inline'), 'src': scripts[i].src || 'inline script #' + i, 'inner': scripts[i].innerHTML, 'location': 'head'});
+        }
+
+        return result;
+    });
+
+    js_body = page.evaluate(function () {
+        var scripts = document.getElementsByTagName("body")[0].getElementsByTagName("script");
+        var result = [];
+        for (var i=0;i < scripts.length;i++) {
+            result.push({'type': ((scripts[i].src) ? 'external':'inline'), 'src': scripts[i].src || 'inline script #' + i, 'inner': scripts[i].innerHTML, 'location': 'body'});
+        }
+
+        return result;
+    });
+
+    scripts = [];
+    js_head.forEach(function(object) {
+        scripts.append(object);
+    });
+
+    js_body.forEach(function(object) {
+        scripts.append(object);
+    });
+
+    console.log(JSON.stringify({
+        'address': address,
+        'timespend': t,
+        'requests': requests,
+        'scripts': scripts
+    }));
+
+    phantom.exit();
+}
+
+function setRequestLocation()
+
 page.onConsoleMessage = function(msg, lineNum, sourceId) {
-    console.log('CONSOLE: ' + msg + ' (from line #' + lineNum + ' in "' + sourceId + '")');
+    if (debug) console.log('CONSOLE: ' + msg + ' (from line #' + lineNum + ' in "' + sourceId + '")');
 };
 
 page.onResourceRequested = function(requestData, networkRequest) {
-    //console.log('Request (#' + requestData.id + '): ' + JSON.stringify(requestData) + JSON.stringify(networkRequest) + "\n");
+    if (debug) console.log('Request (#' + requestData.id + '): ' + JSON.stringify(requestData) + JSON.stringify(networkRequest) + "\n");
+
+    requests[requestData.id] = {
+        'id': requestData.id,
+        'timestart': Date.now(),
+        'timestop': -1,
+        'url': requestData.url,
+        'headers': {
+            'request': requestData.headers,
+            'response': undefined
+        },
+        'status': 0,
+        'size': 0
+    };
 };
 
 page.onResourceReceived = function(response) {
+    if (debug) console.log('Response (#' + response.id + ', stage "' + response.stage + '"): ' + JSON.stringify(response) + "\n");
+
     if (response.stage != 'end') return;
 
-    //console.log('Response (#' + response.id + ', stage "' + response.stage + '"): ' + JSON.stringify(response) + "\n");
-    if (response.status == '301') {
-        redirects.push({url: response.url, redirect: response.redirectURL});
-    }
-
-    extension = response.url.substr(response.url.length - 3);
-    switch(extension) {
-        case 'css':
-        css.push({url: response.url});
-        break;
-        case '.js':
-        js.push({url: response.url});
-        break;
-    }
+    requests[response.id].timestop = Date.now();
+    requests[response.id].headers.response = response.headers
+    requests[response.id].status = response.status;
+    requests[response.id].size = response.bodySize;
 };
